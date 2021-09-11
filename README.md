@@ -12,5 +12,5 @@ For training the two-level model the dataset is split into two training datasets
 
 The code for training two different models is run from **main.py**. There either the LightFM without features or the two-level model can be chosen by providing "lfm" or "two_level" correspondingly as a **model** variable.
 
-The metrics being used to appraise performance are AUC and MAPK. AUC gives a quantitative estimate of how likely positive examples (liked by a user) will be ranked higher than negative (disliked).
-Two-level score: 0.6785927512802481, lfm mapk: (0.18067336212728313, 0.20145442997777074)
+The metrics being used to appraise performance are AUC and MAP@K. AUC gives a quantitative estimate of how likely positive examples (liked by a user) will be ranked higher than negative (disliked); MAR@K shows how many of of the top k (ranked by scores) predicted examples are actually positive.
+Two-level scores: AUC: 0.679, MAP@K: 0.181, maximum possible MAP@K: 0.201
