@@ -92,35 +92,37 @@ def data_split(data_df, users_df, output_dir):
     return train1, train2, test
 
 
-def encode_set(set1, set2, if_pickle, output_dir):
+def encode_set(set1, set2, set3, if_pickle, output_dir):
     id_cols = ['user_id', 'business_id']
     set1_transformed = {}
     set2_transformed = copy.copy(set2)
     set2_transformed = set2_transformed[set2_transformed.user_id.isin(set1.user_id) &
                                         set2_transformed.business_id.isin(set1.business_id)]
-    print(f"lfm test set len: {len(set2_transformed)}")
+    set3_transformed = copy.copy(set3)
+    set3_transformed = set3_transformed[set3_transformed.user_id.isin(set1.user_id) &
+                                        set3_transformed.business_id.isin(set1.business_id)]
+    print(f"lfm set2 set len: {len(set2_transformed)}")
+    print(f"lfm set3 set len: {len(set3_transformed)}")
     for k in id_cols:
         cate_enc = preprocessing.LabelEncoder()
         set1_transformed[k] = cate_enc.fit_transform(set1[k].values)
         set2_transformed[k] = cate_enc.transform(set2_transformed[k].values)
+        set3_transformed[k] = cate_enc.transform(set3_transformed[k].values)
         if if_pickle:
             with open(output_dir + f'{k}_encoder', 'wb') as file:
                 pickle.dump(cate_enc, file, protocol=pickle.HIGHEST_PROTOCOL)
 
-    return set1_transformed, set2_transformed
+    return set1_transformed, set2_transformed, set2_transformed
 
 
-def train_lfm(train1, train2, users_df, n_comp, epochs, output_dir, datadir):
-    #train1.drop(train1.filter(regex="Unname"), axis=1, inplace=True)
-    #train2.drop(train2.filter(regex="Unname"), axis=1, inplace=True)
-    #test.drop(test.filter(regex="Unname"), axis=1, inplace=True)
-
+def train_lfm(train1, train2, test, users_df, n_comp, epochs, output_dir, datadir):
     train1 = train1[train1.user_id.isin(users_df.user_id)]
-    train2 = train2[train2.user_id.isin(users_df.user_id)]
+    train2 = train2[train2.user_id.isin(train1.user_id) & train2.business_id.isin(train1.business_id)]
 
-    train1_transformed, train2_transformed = encode_set(train1, train2, if_pickle=True, output_dir=output_dir)
+    train1_transformed, train2_transformed, test_transformed = \
+        encode_set(train1, train2, test, if_pickle=True, output_dir=output_dir)
 
-    # form a sparce matrix to train a LightFM model
+    # form a sparse matrix to train a LightFM model
     n_users = len(np.unique(train1_transformed['user_id']))
     n_items = len(np.unique(train1_transformed['business_id']))
     train_data = coo_matrix((train1.stars, (train1_transformed['user_id'], train1_transformed['business_id'])),
@@ -129,8 +131,8 @@ def train_lfm(train1, train2, users_df, n_comp, epochs, output_dir, datadir):
     model_lfm = LightFM(no_components=n_comp, learning_rate=0.005, loss='warp')
     model_lfm.fit(train_data, epochs=epochs, num_threads=4, verbose=2)
 
-    lfm_auc_score = lfm_auc(model_lfm, train2_transformed)
-    lfm_mapk_score = lfm_mapk(model_lfm, train2_transformed, 10)
+    lfm_auc_score = lfm_auc(model_lfm, test_transformed)
+    lfm_mapk_score = lfm_mapk(model_lfm, test_transformed, 10)
     print(f"lfm auc: {lfm_auc_score}, lfm mapk: {lfm_mapk_score}")
 
     if not os.path.exists(output_dir):
@@ -142,40 +144,58 @@ def train_lfm(train1, train2, users_df, n_comp, epochs, output_dir, datadir):
     # calculate lfm predictions for the first part of the training set
     usr_rep = model_lfm.get_user_representations()
     item_rep = model_lfm.get_item_representations()
-    users_to_predict = train1_transformed['user_id']
-    items_to_predict = train1_transformed['business_id']
-    user_test_emb = usr_rep[1][users_to_predict] + usr_rep[0][users_to_predict].reshape(-1, 1)
-    item_test_emb = item_rep[1][items_to_predict] + item_rep[0][items_to_predict].reshape(-1, 1)
-    lfm_pred = np.sum(np.multiply(user_test_emb, item_test_emb), axis=1)
+    users_to_predict1 = train1_transformed['user_id']
+    items_to_predict1 = train1_transformed['business_id']
+    user_test_emb1 = usr_rep[1][users_to_predict1] + usr_rep[0][users_to_predict1].reshape(-1, 1)
+    item_test_emb1 = item_rep[1][items_to_predict1] + item_rep[0][items_to_predict1].reshape(-1, 1)
+    lfm_pred1 = np.sum(np.multiply(user_test_emb1, item_test_emb1), axis=1)
 
-    # save 5 items with highest lfm scores for future use in lgb training
-    lfm_output = copy.copy(train1)
-    lfm_output['stars'] = lfm_pred
-    lfm_output = lfm_output.groupby('user_id', as_index=False).apply(lambda x: x.nlargest(5, 'stars'))
-    lfm_output.to_csv(datadir + 'lfm_pred_for_lgb_stars.csv', index=False)
+    # save 5 items with the highest lfm scores from the set 1 for future use in lgb training
+    lfm_output1 = copy.deepcopy(train1)
+    lfm_output1['stars'] = lfm_pred1.tolist()
+    lfm_output1 = lfm_output1.groupby('user_id', as_index=False).apply(lambda x: x.nlargest(5, 'stars'))
+    lfm_output1.to_csv(datadir + 'lfm_pred1_for_lgb_stars.csv', index=False)
+
+    users_to_predict2 = train2_transformed['user_id']
+    items_to_predict2 = train2_transformed['business_id']
+    user_test_emb2 = usr_rep[1][users_to_predict2] + usr_rep[0][users_to_predict2].reshape(-1, 1)
+    item_test_emb2 = item_rep[1][items_to_predict2] + item_rep[0][items_to_predict2].reshape(-1, 1)
+    lfm_pred2 = np.sum(np.multiply(user_test_emb2, item_test_emb2), axis=1)
+
+    # save 10 items with the highest lfm scores from the set 2 for future use in lgb training
+    lfm_output2 = copy.copy(train2)
+    lfm_output2['stars'] = lfm_pred2.tolist()
+    lfm_output2 = lfm_output2.groupby('user_id', as_index=False).apply(lambda x: x.nlargest(10, 'stars'))
+    lfm_output2.to_csv(datadir + 'lfm_pred2_for_lgb_stars.csv', index=False)
 
 
 def train_lgb_w_features(train1, train1_users, train1_items, train2, train2_users, train2_items,
-                        test, test_users, test_items, users_df, lfm_output, lgb_params, output_dir):
-    #train1.drop(train1.filter(regex="Unname"), axis=1, inplace=True)
-    #train2.drop(train2.filter(regex="Unname"), axis=1, inplace=True)
-    #test.drop(test.filter(regex="Unname"), axis=1, inplace=True)
-
+                        test, test_users, test_items, users_df, lfm_output1, lfm_output2, lgb_params, output_dir):
     train1 = train1[train1.user_id.isin(users_df.user_id)]
     train2 = train2[train2.user_id.isin(users_df.user_id)]
     test = test[test.user_id.isin(users_df.user_id)]
 
-    lfm_correct_in_set1 = lfm_output.set_index(['user_id', 'business_id']).index.isin(train1[train1.stars == 1].set_index(
+    lfm_correct_in_set1 = lfm_output1.set_index(['user_id', 'business_id']).index.isin(train1[train1.stars == 1].set_index(
         ['user_id', 'business_id']).index)
-    lfm_output = lfm_output[~lfm_correct_in_set1]
-    lfm_output['stars'] = 0
+    lfm_output1 = lfm_output1[~lfm_correct_in_set1]
+    lfm_output1['stars'] = 0
 
-    train_1_plus_2 = lfm_output.append(train2)
+    train2 = train2.sort_values(['user_id', 'business_id'])
+    lfm_output2 = lfm_output2.sort_values(['user_id', 'business_id'])
+    g = train2[train2.set_index(['user_id', 'business_id']).index.isin(lfm_output2.set_index(
+        ['user_id', 'business_id']).index)]
+    lfm_output2['stars'] = train2[train2.set_index(['user_id', 'business_id']).index.isin(lfm_output2.set_index(
+        ['user_id', 'business_id']).index)]['stars']
 
-    train1_in_lfm_output = train1.set_index(['user_id', 'business_id']).index.isin(lfm_output.
+    train_1_plus_2 = lfm_output1.append(lfm_output2)
+
+    train1_in_lfm_output = train1.set_index(['user_id', 'business_id']).index.isin(lfm_output1.
                                                                          set_index(['user_id', 'business_id']).index)
-    train_lgb_users = train1_users.iloc[train1_in_lfm_output].append(train2_users)
-    train_lgb_items = train1_items.iloc[train1_in_lfm_output].append(train2_items)
+    train2_in_lfm_output = train2.set_index(['user_id', 'business_id']).index.isin(lfm_output2.
+                                                                         set_index(['user_id', 'business_id']).index)
+
+    train_lgb_users = train1_users.iloc[train1_in_lfm_output].append(train2_users.iloc[train2_in_lfm_output])
+    train_lgb_items = train1_items.iloc[train1_in_lfm_output].append(train2_items.iloc[train2_in_lfm_output])
     train_lgb_items = train_lgb_items.rename(columns={'review_count': 'review_count_business'})
 
     train_lgb = pd.concat([train_lgb_users, train_lgb_items], axis=1)
@@ -208,71 +228,70 @@ def run_two_level(n_comp, epochs, homedir, datadir, task=None):
         os.makedirs(output_dir)
 
     # data preparation stage
-    # if task == "data_prep":
-    train1, train2, test = data_split(data_df, users_df, datadir)
-    extract_features(train1, train2, test, data_df, users_df, business_df, datadir)
+    if task == "data_prep":
+        train1, train2, test = data_split(data_df, users_df, datadir)
+        extract_features(train1, train2, test, data_df, users_df, business_df, datadir)
 
     # lfm training - first level of the model
-    '''
     elif task == "train_lfm":
-    # files created after "data_split" is run
-    train1 = pd.read_csv(datadir + 'train_set_1_stars.csv')
-    train2 = pd.read_csv(datadir + 'train_set_2_stars.csv')
-    test = pd.read_csv(datadir + 'test_set_stars.csv')
-    '''
+        # files created after "data_split" are loaded
+        train1 = pd.read_csv(datadir + 'train_set_1_stars.csv')
+        train2 = pd.read_csv(datadir + 'train_set_2_stars.csv')
+        test = pd.read_csv(datadir + 'test_set_stars.csv')
 
-    train_lfm(train1=train1,
-              train2=train2,
-              users_df=users_df,
-              n_comp=n_comp,
-              epochs=epochs,
-              output_dir=output_dir,
-              datadir=datadir
-                  )
+        train_lfm(train1=train1,
+                  train2=train2,
+                  test=test,
+                  users_df=users_df,
+                  n_comp=n_comp,
+                  epochs=epochs,
+                  output_dir=output_dir,
+                  datadir=datadir)
 
     # lgb training - second level of the model
-    '''
     elif task == "train_lgb":
-    train1 = pd.read_csv(datadir + 'train_set_1_stars.csv')
-    train2 = pd.read_csv(datadir + 'train_set_2_stars.csv')
-    '''
-    test = pd.read_csv(datadir + 'test_set_stars.csv')
-    train1_users = pd.read_csv(datadir + 'train1_users_features.csv')
-    train2_users = pd.read_csv(datadir + 'train2_users_features.csv')
-    test_users = pd.read_csv(datadir + 'test_users_features.csv')
-    train1_items = pd.read_csv(datadir + 'train1_items_features.csv')
-    train2_items = pd.read_csv(datadir + 'train2_items_features.csv')
-    test_items = pd.read_csv(datadir + 'test_items_features.csv')
+        train1 = pd.read_csv(datadir + 'train_set_1_stars.csv')
+        train2 = pd.read_csv(datadir + 'train_set_2_stars.csv')
 
-    print(train1.shape)
-    print(train1_users.shape)
-    print(train1_items.shape)
+        test = pd.read_csv(datadir + 'test_set_stars.csv')
+        train1_users = pd.read_csv(datadir + 'train1_users_features.csv')
+        train2_users = pd.read_csv(datadir + 'train2_users_features.csv')
+        test_users = pd.read_csv(datadir + 'test_users_features.csv')
+        train1_items = pd.read_csv(datadir + 'train1_items_features.csv')
+        train2_items = pd.read_csv(datadir + 'train2_items_features.csv')
+        test_items = pd.read_csv(datadir + 'test_items_features.csv')
 
-    # file created after "train_lfm" is run
-    lfm_output = pd.read_csv(datadir + 'lfm_pred_for_lgb_stars.csv')
+        print(train1.shape)
+        print(train1_users.shape)
+        print(train1_items.shape)
 
-    lgb_params = {
-        "task": "train",
-        "num_leaves": 50,
-        "min_data_in_leaf": 20,
-        "min_sum_hessian_in_leaf": 100,
-        "objective": "lambdarank",
-        "metric": "ndcg",
-        "ndcg_eval_at": [1, 3, 5, 10],
-        "learning_rate": .1,
-        "num_threads": 2
-    }
+        # file created after "train_lfm" is run
+        lfm_output1 = pd.read_csv(datadir + 'lfm_pred1_for_lgb_stars.csv')
+        lfm_output2 = pd.read_csv(datadir + 'lfm_pred2_for_lgb_stars.csv')
 
-    train_lgb_w_features(train1=train1,
-                         train1_users=train1_users,
-                         train1_items=train1_items,
-                         train2=train2,
-                         train2_users=train2_users,
-                         train2_items=train2_items,
-                         test=test,
-                         test_users=test_users,
-                         test_items=test_items,
-                         users_df=users_df,
-                         lfm_output=lfm_output,
-                         lgb_params=lgb_params,
-                         output_dir=output_dir)
+        lgb_params = {
+            "task": "train",
+            "num_leaves": 50,
+            "min_data_in_leaf": 20,
+            "min_sum_hessian_in_leaf": 100,
+            "objective": "lambdarank",
+            "metric": "ndcg",
+            "ndcg_eval_at": [1, 3, 5, 10],
+            "learning_rate": .1,
+            "num_threads": 2
+        }
+
+        train_lgb_w_features(train1=train1,
+                             train1_users=train1_users,
+                             train1_items=train1_items,
+                             train2=train2,
+                             train2_users=train2_users,
+                             train2_items=train2_items,
+                             test=test,
+                             test_users=test_users,
+                             test_items=test_items,
+                             users_df=users_df,
+                             lfm_output1=lfm_output1,
+                             lfm_output2=lfm_output2,
+                             lgb_params=lgb_params,
+                             output_dir=output_dir)
