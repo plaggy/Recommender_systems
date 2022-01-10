@@ -13,7 +13,7 @@ For training the two-level model the dataset is split into two training datasets
 The code for training two different models is run from **main.py**. There either the LightFM without features or the two-level model can be chosen by providing "lfm" or "two_level" correspondingly as a **model** variable.
 
 The metrics being used to appraise performance are AUC and MAP@K. AUC gives a quantitative estimate of how likely positive examples (liked by a user) will be ranked higher than negative (disliked); MAR@K shows how many of of the top k (ranked by scores) predicted examples are actually positive.<br />
-LightFM scores: AUC: 0.397, MAP@K: 0.0496, maximum possible MAP@K: 0.4362<br />
+LightFM scores: AUC: 0.402, MAP@K: 0.0367, maximum possible MAP@K: 0.48<br />
 Two-level pipeline scores: AUC: 0.628, MAP@K: 0.181, maximum attainable MAP@K: 0.201
 
 Maximum MAP@K values differ between two approaches because the two-level pipeline score is calculated on the subset of what LightFM score was calculated on. The reason for that was the necessity of allocating an extra training set for training the two-level model.
