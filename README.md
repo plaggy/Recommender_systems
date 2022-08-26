@@ -1,4 +1,4 @@
-# Recommender_systems
+# Recommender system
 
 This repo is implementation of a simple LightFM model and a LightFM + LightGBM two-level model for restaurants recommendation.
 
